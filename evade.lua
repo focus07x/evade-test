@@ -1,57 +1,76 @@
--- ================= CLEAN UI =================
+-- =====================================================
+-- 🧹 ลบ UI ที่ไม่จำเป็น
+-- =====================================================
 pcall(function()
     game.CoreGui.ScriptBoxSimpleLabel:Destroy()
 end)
 
--- ================= SERVICES =================
+-- =====================================================
+-- ⚙️ SETTINGS (ปรับตรงนี้อย่างเดียวพอ)
+-- =====================================================
+
+getgenv().FarmToken = true      -- true = ฟาร์มโทเคน | false = ไม่ฟาร์ม
+getgenv().TokenDelay = 0.25     -- ความเร็ววาร์ปเก็บโทเคน (ยิ่งมากยิ่งนิ่ง)
+
+local SAFE_BLOCK_HEIGHT = 4000   -- 🔼 ความสูงแท่นลอย
+local SAFE_BLOCK_SIZE = Vector3.new(20, 1, 20) -- 📦 ขนาดแท่น
+local RETURN_DISTANCE = 15      -- 🔁 ระยะดึงกลับแท่น
+local JOIN_INTERVAL = 1.5       -- ⏱ ความถี่กด Join (วินาที)
+
+-- =====================================================
+-- 🧠 SERVICES / VARIABLES
+-- =====================================================
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualUser = game:GetService("VirtualUser")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
-
-local joinEvent = ReplicatedStorage
-    :WaitForChild("Events")
+local joinEvent = ReplicatedStorage:WaitForChild("Events")
     :WaitForChild("Player")
     :WaitForChild("ChangePlayerMode")
 
--- ================= SETTINGS =================
-local BLOCK_SIZE = Vector3.new(20, 1, 20)
-local HEIGHT = 800
-local RETURN_DISTANCE = 12
-local JOIN_INTERVAL = 1
--- ============================================
+local currentBlock = nil
+local blockLoopRunning = false
+local farmingToken = false -- ⭐ สำคัญ: ใช้แก้ปัญหาวาร์ปกลับเร็ว
 
-local currentBlock
-local loopRunning = false
+-- =====================================================
+-- 🛑 กัน AFK
+-- =====================================================
+player.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+end)
 
--- ================= CHECK LOBBY (UI Version) =================
+-- =====================================================
+-- 🏠 เช็คว่าอยู่ล็อบบี้หรือไม่ (ดูจาก UI Version)
+-- =====================================================
 local function isInLobby()
     local gui = player:WaitForChild("PlayerGui")
-
     for _, v in ipairs(gui:GetDescendants()) do
         if (v:IsA("TextLabel") or v:IsA("TextButton"))
-            and v.Visible
-            and typeof(v.Text) == "string"
-            and string.find(v.Text, "Version:")
-        then
+        and v.Visible
+        and typeof(v.Text) == "string"
+        and string.find(v.Text, "Version:") then
             return true
         end
     end
     return false
 end
 
--- ================= SAFE BLOCK =================
-local function setupSafeBlock(character)
+-- =====================================================
+-- 🟦 สร้าง Safe Block + วาร์ปขึ้น
+-- =====================================================
+local function createSafeBlock(character)
     local hrp = character:WaitForChild("HumanoidRootPart")
 
     if currentBlock then
         currentBlock:Destroy()
-        currentBlock = nil
     end
 
     local block = Instance.new("Part")
-    block.Size = BLOCK_SIZE
+    block.Size = SAFE_BLOCK_SIZE
     block.Anchored = true
     block.CanCollide = true
     block.Material = Enum.Material.SmoothPlastic
@@ -59,114 +78,146 @@ local function setupSafeBlock(character)
     block.Name = "SafeBlock"
     block.Parent = workspace
 
-    local pos = hrp.Position + Vector3.new(0, HEIGHT, 0)
+    local pos = hrp.Position + Vector3.new(0, SAFE_BLOCK_HEIGHT, 0)
     block.CFrame = CFrame.new(pos)
     hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
 
     currentBlock = block
 
-    if loopRunning then return end
-    loopRunning = true
+    if blockLoopRunning then return end
+    blockLoopRunning = true
 
+    -- 🔁 ลูปดึงกลับแท่น (เฉพาะตอน NOT ฟาร์มโทเคน)
     task.spawn(function()
-        while loopRunning do
+        while blockLoopRunning do
             task.wait(0.8)
 
-            if not player.Character
-            or not player.Character:FindFirstChild("HumanoidRootPart")
-            or not currentBlock then
-                loopRunning = false
+            if not currentBlock
+            or not player.Character
+            or not player.Character:FindFirstChild("HumanoidRootPart") then
+                blockLoopRunning = false
                 break
             end
 
-            local hrp = player.Character.HumanoidRootPart
-            local dist = (hrp.Position - currentBlock.Position).Magnitude
-
-            if dist > RETURN_DISTANCE then
-                hrp.CFrame = CFrame.new(currentBlock.Position + Vector3.new(0, 3, 0))
+            if not farmingToken then
+                local hrp = player.Character.HumanoidRootPart
+                if (hrp.Position - currentBlock.Position).Magnitude > RETURN_DISTANCE then
+                    hrp.CFrame = CFrame.new(currentBlock.Position + Vector3.new(0, 3, 0))
+                end
             end
         end
     end)
 end
 
--- ================= CHARACTER HANDLER =================
-player.CharacterAdded:Connect(function(character)
-    task.wait(0.5)
-    if not isInLobby() then
-        setupSafeBlock(character)
-    end
-end)
-
--- ================= AUTO RESPAWN (HUD) =================
+-- =====================================================
+-- ♻️ Auto Respawn (HUD หาย = ล้ม/ตาย)
+-- =====================================================
 local function setupHUDListener(hud)
-    if not hud then return end
-
     local lastVisible = hud.Visible
-    local sentOnce = false
+    local sent = false
 
     hud:GetPropertyChangedSignal("Visible"):Connect(function()
-        if hud.Visible == false and lastVisible == true and not sentOnce then
-            sentOnce = true
+        if hud.Visible == false and lastVisible == true and not sent then
+            sent = true
             pcall(function()
                 joinEvent:FireServer(true)
             end)
-            print("✅ Auto Respawn Triggered")
         elseif hud.Visible == true then
-            sentOnce = false
+            sent = false
         end
         lastVisible = hud.Visible
     end)
 end
 
-local function listenToShared(shared)
-    if not shared then return end
+local function listenHUD()
+    local gui = player:WaitForChild("PlayerGui")
 
-    local hud = shared:FindFirstChild("HUD")
-    if hud then
-        setupHUDListener(hud)
+    local function hookShared(shared)
+        local hud = shared:FindFirstChild("HUD")
+        if hud then setupHUDListener(hud) end
+        shared.ChildAdded:Connect(function(c)
+            if c.Name == "HUD" then
+                setupHUDListener(c)
+            end
+        end)
     end
 
-    shared.ChildAdded:Connect(function(child)
-        if child.Name == "HUD" then
-            setupHUDListener(child)
+    local shared = gui:FindFirstChild("Shared")
+    if shared then hookShared(shared) end
+
+    gui.ChildAdded:Connect(function(c)
+        if c.Name == "Shared" then
+            hookShared(c)
         end
     end)
 end
 
-local function listenToPlayerGui()
-    local playerGui = player:WaitForChild("PlayerGui")
-    local shared = playerGui:FindFirstChild("Shared")
-    if shared then
-        listenToShared(shared)
-    end
+listenHUD()
 
-    playerGui.ChildAdded:Connect(function(child)
-        if child.Name == "Shared" then
-            listenToShared(child)
-        end
-    end)
+-- =====================================================
+-- 🪙 Auto Farm Token (แก้แล้ว เก็บทันแน่นอน)
+-- =====================================================
+local function getTokenFolder()
+    if Workspace:FindFirstChild("Game")
+    and Workspace.Game:FindFirstChild("Effects")
+    and Workspace.Game.Effects:FindFirstChild("Tickets") then
+        return Workspace.Game.Effects.Tickets
+    end
 end
 
-listenToPlayerGui()
-print("✅ Auto Respawn Script Loaded")
+task.spawn(function()
+    while true do
+        if getgenv().FarmToken and not isInLobby() then
+            farmingToken = true -- 🔓 ปิดการดึงกลับชั่วคราว
 
--- ================= MAIN LOOP =================
+            local tokens = getTokenFolder()
+            local char = player.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+            if tokens and char and hrp then
+                for _, token in ipairs(tokens:GetChildren()) do
+                    if not getgenv().FarmToken then break end
+                    local part = token:FindFirstChild("HumanoidRootPart")
+                    if part then
+                        hrp.CFrame = part.CFrame
+                        task.wait(getgenv().TokenDelay) -- ⏱ รอให้เซิร์ฟเวอร์นับ
+                    end
+                end
+            end
+
+            farmingToken = false -- 🔒 เก็บเสร็จ → กลับขึ้น Safe Block
+        end
+        task.wait(1)
+    end
+end)
+
+-- =====================================================
+-- 👤 ตัวละครเกิดใหม่
+-- =====================================================
+player.CharacterAdded:Connect(function(char)
+    task.wait(0.5)
+    if not isInLobby() then
+        createSafeBlock(char)
+    end
+end)
+
+-- =====================================================
+-- 🔄 MAIN LOOP (Join / สร้างบล็อก)
+-- =====================================================
 while true do
     if isInLobby() then
         if currentBlock then
             currentBlock:Destroy()
             currentBlock = nil
         end
-        loopRunning = false
-
+        blockLoopRunning = false
         pcall(function()
             joinEvent:FireServer(true)
         end)
-
         task.wait(JOIN_INTERVAL)
     else
         if player.Character and not currentBlock then
-            setupSafeBlock(player.Character)
+            createSafeBlock(player.Character)
         end
         task.wait(2)
     end
